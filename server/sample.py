@@ -1,6 +1,6 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
-from crypt import crypt3_3
+from crypt import crypt_ws
 
 app = FastAPI()
 
@@ -60,30 +60,10 @@ async def websocket_endpoint(websocket: WebSocket):
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     try:
-        peer = crypt3_3.Communicator(is_initiator=True)
-        for i in peer.e_get_public_key():
-            if isinstance(i, str):
-                await websocket.send_text(i)
-            else:
-                await websocket.send_bytes(i)
-        p1_pub = await websocket.receive_text()
-        p1_sign_key = await websocket.receive_text()
-        p1_pub_sign = await websocket.receive_bytes()
-        salt1 = await websocket.receive_bytes()
-        salsign1 = await websocket.receive_bytes()
-
-        peer.finalize_connection(p1_pub, p1_sign_key, p1_pub_sign, salt1, salsign1)
-        encrypted, nonce, version, sign = peer.encrypt("hi there!")
-        version = version.to_bytes(4, byteorder='big')
-        print(encrypted, nonce, version, sign)
-        await websocket.send_bytes(encrypted)
-        await websocket.send_bytes(nonce)
-        await websocket.send_bytes(version)
-        await websocket.send_bytes(sign)
-        # while True:
-        #     data = await websocket.receive_bytes()
-        #     print(f"Получено байт: {data}")
-        #     await websocket.send_bytes(b"hi from server")
+        peer = crypt_ws.Communicator_server(websocket)
+        await peer.exchange()
+        await peer.send("hello everyone!")
+        print(await peer.receive())
     except WebSocketDisconnect:
         print("Client disconnected")
     # except Exception as e:

@@ -87,14 +87,14 @@ class Communicator:
 
     def get_public_key(self):
         return (
-            CryptoUtils.serialize_public_key(self.pub),
             CryptoUtils.serialize_public_key(self.sign_pub),
+            CryptoUtils.serialize_public_key(self.pub),
             base64.b64encode(self.sign_priv.sign(self.pub.public_bytes_raw())),
             self.salt,
             base64.b64encode(self.sign_priv.sign(self.salt))
         )
 
-    def finalize_connection(self, peer_signpub_b64, peer_public_key_b64,peer_public_key_sign, peer_salt, peer_salt_sign):
+    def finalize_connection(self, peer_signpub_b64: str, peer_public_key_b64: str,peer_public_key_sign, peer_salt, peer_salt_sign):
         self.other_sign_pub = CryptoUtils.deserialize_ed25519_key(peer_signpub_b64)
         peer_pub = CryptoUtils.deserialize_x25519_key(peer_public_key_b64)
 
@@ -124,15 +124,6 @@ class Communicator:
         self.send_cipher = ChaCha20Poly1305(self.send_key)
         self.recv_cipher = ChaCha20Poly1305(self.recv_key)
         self.rekey_seed = material["rekey_seed"]
-
-    def e_get_public_key(self):
-        return [
-            CryptoUtils.serialize_public_key(self.sign_pub),
-            CryptoUtils.serialize_public_key(self.pub),
-            base64.b64encode(self.sign_priv.sign(self.pub.public_bytes_raw())),
-            self.salt,
-            base64.b64encode(self.sign_priv.sign(self.salt))
-        ]
 
     def e_finalize_connection(self, data):
         self.finalize_connection(*data)
@@ -176,8 +167,8 @@ class Communicator:
 def test():
     peer1 = Communicator(is_initiator=True)
     peer2 = Communicator(is_initiator=False)
-    p1_pub, p1_sign_key, p1_pub_sign, salt1, salsign1 = peer1.get_public_key()
-    p2_pub, p2_sign_key, p2_pub_sign, salt2, salsign2 = peer2.get_public_key()
+    p1_sign_key, p1_pub, p1_pub_sign, salt1, salsign1 = peer1.get_public_key()
+    p2_sign_key, p2_pub, p2_pub_sign, salt2, salsign2 = peer2.get_public_key()
 
     peer1.finalize_connection(p2_sign_key, p2_pub, p2_pub_sign, salt2, salsign2)
     peer2.finalize_connection(p1_sign_key, p1_pub, p1_pub_sign, salt1, salsign1)
