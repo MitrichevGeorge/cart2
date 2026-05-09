@@ -1,3 +1,6 @@
 uvicorn
 fastapi
 websockets
+cryptography
+crypto
+rsa
