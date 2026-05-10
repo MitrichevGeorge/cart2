@@ -1,10 +1,11 @@
 import os
 import base64
 import secrets
-from cryptography.hazmat.primitives.asymmetric import x25519, ed25519
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+from cryptography.hazmat.primitives.asymmetric import x25519, ed25519
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 
@@ -38,16 +39,16 @@ class CryptoUtils:
     def derive_session_material(shared_secret: bytes, salt: bytes) -> dict:
         material = HKDF(
             algorithm=hashes.SHA256(),
-            length=104,
+            length=120,
             salt=salt,
             info=b'chat-v3'
         ).derive(shared_secret)
         return {
             "key1": material[:32],
             "key2": material[32:64],
-            "nonce_base1": material[64:68],
-            "nonce_base2": material[68:72],
-            "rekey_seed": material[72:104]
+            "nonce_base1": material[64:76],
+            "nonce_base2": material[76:88],
+            "rekey_seed": material[88:120]
         }
 
     @staticmethod
@@ -64,7 +65,7 @@ class CryptoUtils:
         try:
             public_key.verify(sign, message)
             return True
-        except Exception:
+        except InvalidSignature:
             return False
 
 class Communicator:
@@ -92,18 +93,18 @@ class Communicator:
         return (
             CryptoUtils.serialize_public_key(self.sign_pub),
             CryptoUtils.serialize_public_key(self.pub),
-            base64.b64encode(self.sign_priv.sign(self.pub.public_bytes_raw())),
+            self.sign_priv.sign(self.pub.public_bytes_raw()),
             self.salt,
-            base64.b64encode(self.sign_priv.sign(self.salt))
+            self.sign_priv.sign(self.salt)
         )
 
     def finalize_connection(self, peer_signpub_b64: str, peer_public_key_b64: str, peer_public_key_sign: bytes, peer_salt: bytes, peer_salt_sign: bytes):
         self.other_sign_pub = CryptoUtils.deserialize_ed25519_key(peer_signpub_b64)
         peer_pub = CryptoUtils.deserialize_x25519_key(peer_public_key_b64)
 
-        if not CryptoUtils.check_sign(self.other_sign_pub, base64.b64decode(peer_public_key_sign), peer_pub.public_bytes_raw()):
+        if not CryptoUtils.check_sign(self.other_sign_pub, peer_public_key_sign, peer_pub.public_bytes_raw()):
             raise ValueError("FAKE KEY")
-        if not CryptoUtils.check_sign(self.other_sign_pub, base64.b64decode(peer_salt_sign), peer_salt):
+        if not CryptoUtils.check_sign(self.other_sign_pub, peer_salt_sign, peer_salt):
             raise ValueError("FAKE SALT")
 
         shared_secret = self.priv.exchange(peer_pub)
@@ -128,11 +129,11 @@ class Communicator:
         self.recv_cipher = ChaCha20Poly1305(self.recv_key)
         self.rekey_seed = material["rekey_seed"]
 
-    def e_finalize_connection(self, data: tuple[str, str, bytes, bytes, bytes]):
+    def finalize_connection_from_data(self, data: tuple[str, str, bytes, bytes, bytes]):
         self.finalize_connection(*data)
 
     def make_nonce(self, base: bytes, counter: int) -> bytes:
-        return base + counter.to_bytes(8, 'big')
+        return (int.from_bytes(base, 'big') ^ counter).to_bytes(12, 'big')
 
     def maybe_rekey(self):
         if (self.send_counter != 0 and self.send_counter % self.REKEY_EVERY == 0):
@@ -143,6 +144,8 @@ class Communicator:
 
     def sync_recv_key(self, incoming_version: int):
         if self.recv_key is not None and self.rekey_seed is not None:
+            if self.recv_key_version > incoming_version:
+                raise ValueError("KEY WAS REUSED")
             while self.recv_key_version < incoming_version:
                 self.recv_key = CryptoUtils.rekey(self.recv_key, self.rekey_seed)
 

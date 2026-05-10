@@ -65,6 +65,8 @@ async def websocket_endpoint(websocket: WebSocket):
         await peer.exchange()
         await peer.send("hello everyone!")
         print(await peer.receive())
+        print(await peer.receive())
+        print(await peer.receive())
     except WebSocketDisconnect:
         print("Client disconnected")
     # except Exception as e:

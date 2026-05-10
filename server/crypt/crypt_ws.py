@@ -1,3 +1,4 @@
+import secrets
 from . import crypt3_3
 import fastapi, datetime, json, base64
 from websockets.asyncio.client import ClientConnection
@@ -16,7 +17,7 @@ class SignedSession:
             data = json.loads(cert)
             if datetime.datetime.fromisoformat(data["date"]) <= datetime.datetime.now(datetime.timezone.utc):
                 return False
-            return data["key"] == key
+            return secrets.compare_digest(data["key"], key)
         except (json.JSONDecodeError, KeyError, ValueError):
             return False
 
@@ -77,7 +78,7 @@ class Communicator_client(Communicator):
     async def exchange(self):
         for i in self.communicator.get_public_key():
             await self.ws.send(i)
-        self.communicator.e_finalize_connection([await self.ws.recv() for i in range(5)])
+        self.communicator.finalize_connection_from_data([await self.ws.recv() for i in range(5)])
         verify_string = await self.ws.recv()
         verify_string_sign = await self.ws.recv()
         if not crypt3_3.CryptoUtils.check_sign(self.main_sign_pub, verify_string_sign, verify_string.encode()):

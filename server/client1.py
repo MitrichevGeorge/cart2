@@ -12,5 +12,7 @@ async def hello():
         await peer.exchange()
         print(await peer.receive())
         await peer.send("hi from your slave")
+        await peer.send("lorem inspum")
+        await peer.send("dolor sit amet")
 
 asyncio.run(hello())
