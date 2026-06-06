@@ -1,5 +1,6 @@
 import secrets
 from . import crypt3_3
+from .cryptexceptions import MitmAttack
 import fastapi, datetime, json, base64
 from websockets.asyncio.client import ClientConnection
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -33,60 +34,59 @@ class Communicator_server(Communicator):
         self.verify_string = ""
 
     async def exchange(self):
-        k_sign_key, k_pub, k_pub_sign, k_salt, k_salt_sign = self.communicator.get_public_key()
-        self.verify_string = SignedSession.create(k_sign_key)
+        k_signing_pub, k_x25519_pub, k_pub_sign = self.communicator.get_public_key()
+        self.verify_string = SignedSession.create(k_signing_pub)
         self.verify_string_sign = self.main_sign_priv.sign(self.verify_string.encode())
 
-        await self.ws.send_text(k_sign_key)
-        await self.ws.send_text(k_pub)
+        await self.ws.send_text(k_signing_pub)
+        await self.ws.send_text(k_x25519_pub)
         await self.ws.send_bytes(k_pub_sign)
-        await self.ws.send_bytes(k_salt)
-        await self.ws.send_bytes(k_salt_sign)
         await self.ws.send_text(self.verify_string)
         await self.ws.send_bytes(self.verify_string_sign)
         
         other_sign_key = await self.ws.receive_text()
         other_pub = await self.ws.receive_text()
         other_pub_sign = await self.ws.receive_bytes()
-        other_salt = await self.ws.receive_bytes()
-        other_salt_sign = await self.ws.receive_bytes()
-        self.communicator.finalize_connection(other_sign_key, other_pub, other_pub_sign, other_salt, other_salt_sign)
+        self.communicator.finalize_connection(other_sign_key, other_pub, other_pub_sign)
 
     # 12 bytes nonce
     # 4 bytes version
-    # 88 bytes sign
 
     async def send(self, text: str):
-        encrypted, nonce, version, sign = self.communicator.encrypt(text)
-        packet = (version.to_bytes(4, byteorder='big') + nonce + sign + encrypted)
+        encrypted, nonce, version = self.communicator.encrypt(text)
+        packet = (version.to_bytes(4, byteorder='big') + nonce + encrypted)
         await self.ws.send_bytes(packet)
 
     async def receive(self) -> str:
         packet = await self.ws.receive_bytes()
         version = int.from_bytes(packet[:4], byteorder='big')
         nonce = packet[4:16]
-        sign = packet[16:104]
-        encrypted = packet[104:]
-        return self.communicator.decrypt(encrypted, nonce, version, sign)
+        encrypted = packet[16:]
+        return self.communicator.decrypt(encrypted, nonce, version)
 
 class Communicator_client(Communicator):
     def __init__(self, ws: ClientConnection, main_sign_pub: str):
         super().__init__(is_initiator=False)
         self.ws = ws
-        self.main_sign_pub = crypt3_3.CryptoUtils.deserialize_ed25519_key(main_sign_pub)
+        try:
+            self.main_sign_pub = crypt3_3.CryptoUtils.deserialize_ed25519_key(main_sign_pub)
+        except ValueError:
+            raise MitmAttack
 
-    async def exchange(self):
+    async def exchange(self) -> None:
         for i in self.communicator.get_public_key():
             await self.ws.send(i)
-        self.communicator.finalize_connection_from_data([await self.ws.recv() for i in range(5)])
+        self.communicator.finalize_connection_from_data([await self.ws.recv() for i in range(3)])
         verify_string = await self.ws.recv()
         verify_string_sign = await self.ws.recv()
         if not crypt3_3.CryptoUtils.check_sign(self.main_sign_pub, verify_string_sign, verify_string.encode()):
-            raise ValueError("MITM IS HERE")
+            raise MitmAttack
+        # if not SignedSession.check(verify_string, self.communicator.other_sign_pub):
+        #     raise MitmAttack
 
     async def send(self, text: str):
-        encrypted, nonce, version, sign = self.communicator.encrypt(text)
-        packet = (version.to_bytes(4, byteorder='big') + nonce + sign + encrypted)
+        encrypted, nonce, version = self.communicator.encrypt(text)
+        packet = (version.to_bytes(4, byteorder='big') + nonce + encrypted)
         await self.ws.send(packet)
 
     async def receive(self) -> str:
@@ -95,8 +95,7 @@ class Communicator_client(Communicator):
             raise TypeError("Wrong packet")
         version = int.from_bytes(packet[:4], byteorder='big')
         nonce = packet[4:16]
-        sign = packet[16:104]
-        encrypted = packet[104:]
-        return self.communicator.decrypt(encrypted, nonce, version, sign)
+        encrypted = packet[16:]
+        return self.communicator.decrypt(encrypted, nonce, version)
     
             

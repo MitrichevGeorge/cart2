@@ -39,23 +39,13 @@ html = """
 </html>
 """
 
+class World:
+    x: int = 0
+    y: int = 0
 
 @app.get("/")
 async def get():
     return HTMLResponse(html)
-
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    try:
-        while True:
-            data = await websocket.receive_text()
-            await websocket.send_text(f"Message text was: {data}")
-    except WebSocketDisconnect:
-        print("Client disconnected")
-    except Exception as e:
-        print(f"Error: {e}")
 
 @app.websocket("/wsc")
 async def websocket_endpoint(websocket: WebSocket):
@@ -63,14 +53,14 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         peer = crypt_ws.Communicator_server(websocket, k_sign_priv)
         await peer.exchange()
-        await peer.send("hello everyone!")
+        for _ in range(20):
+            print(_)
+            await peer.send("hello everyone!")
         print(await peer.receive())
         print(await peer.receive())
         print(await peer.receive())
     except WebSocketDisconnect:
         print("Client disconnected")
-    # except Exception as e:
-    #     print(f"Error: {e}")
 
 @app.websocket("/gk")
 async def websocket_endpoint(websocket: WebSocket):
