@@ -81,8 +81,8 @@ class Communicator_client(Communicator):
         verify_string_sign = await self.ws.recv()
         if not crypt3_3.CryptoUtils.check_sign(self.main_sign_pub, verify_string_sign, verify_string.encode()):
             raise MitmAttack
-        # if not SignedSession.check(verify_string, self.communicator.other_sign_pub):
-        #     raise MitmAttack
+        if not SignedSession.check(verify_string, crypt3_3.CryptoUtils.serialize_public_key(self.communicator.other_sign_pub)):
+            raise MitmAttack
 
     async def send(self, text: str):
         encrypted, nonce, version = self.communicator.encrypt(text)
