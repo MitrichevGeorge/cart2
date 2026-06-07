@@ -109,8 +109,7 @@ class Communicator:
         peer_pub = CryptoUtils.deserialize_x25519_key(peer_public_key_b64)
 
         if not CryptoUtils.check_sign(self.other_sign_pub, peer_public_key_sign, peer_pub.public_bytes_raw()):
-            raise ValueError("FAKE KEY")
-
+            raise MitmAttack
         shared_secret = self.priv.exchange(peer_pub)
         material = CryptoUtils.derive_session_material(shared_secret, self.STATIC_SALT)
 
@@ -146,9 +145,9 @@ class Communicator:
     def sync_recv_key(self, incoming_version: int):
         if self.recv_key is not None and self.rekey_seed_recv is not None:
             if self.recv_key_version > incoming_version:
-                raise ValueError("KEY WAS REUSED")
+                raise InternalError("KEY WAS REUSED")
             if incoming_version - self.recv_key_version > self.MAX_REKEY_GAP:
-                raise ValueError("Too many missed rekeys, connection out of sync")
+                raise InternalError("Too many missed rekeys, connection out of sync")
             while self.recv_key_version < incoming_version:
                 self.recv_key, self.rekey_seed_recv = CryptoUtils.rekey(self.recv_key, self.rekey_seed_recv)
 
@@ -159,32 +158,40 @@ class Communicator:
         else:
             raise InternalError
 
-    def encrypt(self, text: str) -> tuple[bytes, bytes, int]:
+    def encrypt(self, data: bytes) -> tuple[bytes, bytes, int]:
         if self.send_cipher is None:
-            raise TypeError("ChaCha20Poly1305(send) is not initialized")
+            if VERBOSE:
+                raise TypeError("ChaCha20Poly1305(send) is not initialized")
+            else:
+                raise InternalError
         
         nonce = secrets.token_bytes(12)
         version = self.send_key_version
         aad = version.to_bytes(4, 'big') + self.send_counter.to_bytes(4, 'big') + nonce
-        encrypted = self.send_cipher.encrypt(nonce, text.encode(), aad)
+        encrypted = self.send_cipher.encrypt(nonce, data, aad)
 
         self.send_counter += 1
         self.maybe_rekey()
         return encrypted, nonce, version
 
-    def decrypt(self, encrypted: bytes, nonce: bytes, key_version: int) -> str:
+    def encrypts(self, text: str) -> tuple[bytes, bytes, int]:
+        return self.encrypt(text.encode())
+
+    def decrypt(self, encrypted: bytes, nonce: bytes, key_version: int) -> bytes:
         if self.other_sign_pub is None:
-            raise TypeError("Other's sign public key is not initialized")
+            raise InternalError("Other's sign public key is not initialized")
         if self.recv_cipher is None:
-            raise TypeError("ChaCha20Poly1305(receive) is not initialized")
+            raise InternalError("ChaCha20Poly1305(receive) is not initialized")
         
         self.recv_counter %= self.REKEY_EVERY
-        # sign_data = key_version.to_bytes(4, 'big') + nonce + encrypted + self.recv_counter.to_bytes(4, 'big')
         aad = key_version.to_bytes(4, 'big') + self.recv_counter.to_bytes(4, 'big') + nonce
         self.sync_recv_key(key_version)
         decrypted = self.recv_cipher.decrypt(nonce, encrypted, aad)
         self.recv_counter += 1
-        return decrypted.decode()
+        return decrypted
+
+    def decrypts(self, encrypted: bytes, nonce: bytes, key_version: int) -> str:
+        return self.decrypt(encrypted, nonce, key_version).decode()
 
 def test():
     peer1 = Communicator(is_initiator=True)
@@ -198,7 +205,7 @@ def test():
     for i in range(8):
 
         encrypted, nonce, version = \
-            peer1.encrypt(
+            peer1.encrypts(
                 f"peer1 -> peer2 :: {i}"
             )
 
@@ -211,7 +218,7 @@ def test():
         )
 
     encrypted, nonce, version = \
-        peer2.encrypt(
+        peer2.encrypts(
             f"peer2 -> peer1 :: hithere"
         )
 
@@ -223,25 +230,25 @@ def test():
         )
     )
 
-    encrypted, nonce, version = peer2.encrypt(f"peer2 -> peer1 :: rtbrtgbtrbh")
+    encrypted, nonce, version = peer2.encrypts(f"peer2 -> peer1 :: rtbrtgbtrbh")
     print(encrypted)
-    encrypted, nonce, version = peer2.encrypt(f"peer2 -> peer1 :: rtbrtgbtrbh")
+    encrypted, nonce, version = peer2.encrypts(f"peer2 -> peer1 :: rtbrtgbtrbh")
     print(encrypted)
-    encrypted, nonce, version = peer2.encrypt(f"peer2 -> peer1 :: rtbrtgbtrbh")
+    encrypted, nonce, version = peer2.encrypts(f"peer2 -> peer1 :: rtbrtgbtrbh")
     print(encrypted)
-    encrypted, nonce, version = peer2.encrypt(f"peer2 -> peer1 :: rtbrtgbtrbh")
+    encrypted, nonce, version = peer2.encrypts(f"peer2 -> peer1 :: rtbrtgbtrbh")
     print(encrypted)
-    encrypted, nonce, version = peer2.encrypt(f"peer2 -> peer1 :: rtbrtgbtrbh")
+    encrypted, nonce, version = peer2.encrypts(f"peer2 -> peer1 :: rtbrtgbtrbh")
     print(encrypted)
-    encrypted, nonce, version = peer2.encrypt(f"peer2 -> peer1 :: rtbrtgbtrbh")
+    encrypted, nonce, version = peer2.encrypts(f"peer2 -> peer1 :: rtbrtgbtrbh")
     print(encrypted)
-    encrypted, nonce, version = peer2.encrypt(f"peer2 -> peer1 :: rtbrtgbtrbh")
+    encrypted, nonce, version = peer2.encrypts(f"peer2 -> peer1 :: rtbrtgbtrbh")
     print(encrypted)
-    encrypted, nonce, version = peer2.encrypt(f"peer2 -> peer1 :: rtbrtgbtrbh")
+    encrypted, nonce, version = peer2.encrypts(f"peer2 -> peer1 :: rtbrtgbtrbh")
     print(encrypted, nonce, version, "-"*40)
 
     encrypted, nonce, version = \
-        peer2.encrypt(
+        peer2.encrypts(
             f"peer2 -> peer1 :: ergvrtgrh"
         )
 

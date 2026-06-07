@@ -54,14 +54,14 @@ async def websocket_endpoint(websocket: WebSocket):
         peer = crypt_ws.Communicator_server(websocket, k_sign_priv)
         await peer.exchange()
         await peer.send("hello everyone!")
-        print(await peer.receive())
-        print(await peer.receive())
-        print(await peer.receive())
+        print(await peer.recv_str())
+        print(await peer.recv_str())
+        print(await peer.recv_str())
     except WebSocketDisconnect:
         print("Client disconnected")
 
 @app.websocket("/gk")
-async def websocket_endpoint(websocket: WebSocket):
+async def getkey_endpoint(websocket: WebSocket):
     await websocket.accept()
     try:
         await websocket.send_text(CryptoUtils.serialize_public_key(k_sign_pub))
