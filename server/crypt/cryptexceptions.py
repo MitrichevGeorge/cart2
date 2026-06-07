@@ -6,3 +6,6 @@ class MitmAttack(CryptException):
 
 class InternalError(CryptException):
     pass
+
+class NetworkError(CryptException):
+    pass

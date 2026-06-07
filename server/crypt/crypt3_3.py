@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives.asymmetric import x25519, ed25519
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 
-VERBOSE = not Path(".verbose")
+VERBOSE = Path(".verbose").exists()
 
 def log(text: str):
     if VERBOSE:
