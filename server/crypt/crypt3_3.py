@@ -1,5 +1,6 @@
-import os
 import base64
+from enum import verify
+import struct
 import secrets
 from pathlib import Path
 from .cryptexceptions import InternalError, MitmAttack
@@ -87,6 +88,9 @@ class Communicator:
     recv_key: bytes | None = None
     rekey_seed: bytes | None = None
 
+    form_aad: struct.Struct = struct.Struct('>2I 12s')
+    form_packet: struct.Struct = struct.Struct('>I 12s')
+
     def __init__(self, is_initiator: bool = False):
         self.is_initiator = is_initiator
         self.priv, self.pub = CryptoUtils.generate_x25519_keys()
@@ -158,7 +162,7 @@ class Communicator:
         else:
             raise InternalError
 
-    def encrypt(self, data: bytes) -> tuple[bytes, bytes, int]:
+    def encrypt(self, data: bytes) -> bytes:
         if self.send_cipher is None:
             if VERBOSE:
                 raise TypeError("ChaCha20Poly1305(send) is not initialized")
@@ -167,31 +171,33 @@ class Communicator:
         
         nonce = secrets.token_bytes(12)
         version = self.send_key_version
-        aad = version.to_bytes(4, 'big') + self.send_counter.to_bytes(4, 'big') + nonce
+        aad = self.form_aad.pack(version, self.send_counter, nonce)
         encrypted = self.send_cipher.encrypt(nonce, data, aad)
 
         self.send_counter += 1
         self.maybe_rekey()
-        return encrypted, nonce, version
+        return self.form_packet.pack(version, nonce) + encrypted
 
-    def encrypts(self, text: str) -> tuple[bytes, bytes, int]:
+    def encrypts(self, text: str) -> bytes:
         return self.encrypt(text.encode())
 
-    def decrypt(self, encrypted: bytes, nonce: bytes, key_version: int) -> bytes:
+    def decrypt(self, packet: bytes) -> bytes:
+        key_version, nonce = self.form_packet.unpack_from(packet, 0)
+        encrypted = memoryview(packet)[16:]
         if self.other_sign_pub is None:
             raise InternalError("Other's sign public key is not initialized")
         if self.recv_cipher is None:
             raise InternalError("ChaCha20Poly1305(receive) is not initialized")
         
         self.recv_counter %= self.REKEY_EVERY
-        aad = key_version.to_bytes(4, 'big') + self.recv_counter.to_bytes(4, 'big') + nonce
+        aad = self.form_aad.pack(key_version, self.recv_counter, nonce)
         self.sync_recv_key(key_version)
         decrypted = self.recv_cipher.decrypt(nonce, encrypted, aad)
         self.recv_counter += 1
         return decrypted
 
-    def decrypts(self, encrypted: bytes, nonce: bytes, key_version: int) -> str:
-        return self.decrypt(encrypted, nonce, key_version).decode()
+    def decrypts(self, packet: bytes) -> str:
+        return self.decrypt(packet).decode()
 
 def test():
     peer1 = Communicator(is_initiator=True)
@@ -203,61 +209,19 @@ def test():
     peer2.finalize_connection(p1_sign_key, p1_pub, p1_pub_sign)
 
     for i in range(8):
+        encrypted = peer1.encrypts(f"peer1 -> peer2 :: {i}")
+        print(peer2.decrypt(encrypted))
 
-        encrypted, nonce, version = \
-            peer1.encrypts(
-                f"peer1 -> peer2 :: {i}"
-            )
+    encrypted = peer2.encrypts(f"peer2 -> peer1 :: hithere")
 
-        print(
-            peer2.decrypt(
-                encrypted,
-                nonce,
-                version
-            )
-        )
+    print(encrypted, peer1.decrypt(encrypted))
 
-    encrypted, nonce, version = \
-        peer2.encrypts(
-            f"peer2 -> peer1 :: hithere"
-        )
+    for _ in range(20):
+        encrypted = peer2.encrypts(f"peer2 -> peer1 :: rtbrtgbtrbh")
+        print(encrypted)
 
-    print(encrypted,
-        peer1.decrypt(
-            encrypted,
-            nonce,
-            version
-        )
-    )
 
-    encrypted, nonce, version = peer2.encrypts(f"peer2 -> peer1 :: rtbrtgbtrbh")
-    print(encrypted)
-    encrypted, nonce, version = peer2.encrypts(f"peer2 -> peer1 :: rtbrtgbtrbh")
-    print(encrypted)
-    encrypted, nonce, version = peer2.encrypts(f"peer2 -> peer1 :: rtbrtgbtrbh")
-    print(encrypted)
-    encrypted, nonce, version = peer2.encrypts(f"peer2 -> peer1 :: rtbrtgbtrbh")
-    print(encrypted)
-    encrypted, nonce, version = peer2.encrypts(f"peer2 -> peer1 :: rtbrtgbtrbh")
-    print(encrypted)
-    encrypted, nonce, version = peer2.encrypts(f"peer2 -> peer1 :: rtbrtgbtrbh")
-    print(encrypted)
-    encrypted, nonce, version = peer2.encrypts(f"peer2 -> peer1 :: rtbrtgbtrbh")
-    print(encrypted)
-    encrypted, nonce, version = peer2.encrypts(f"peer2 -> peer1 :: rtbrtgbtrbh")
-    print(encrypted, nonce, version, "-"*40)
-
-    encrypted, nonce, version = \
-        peer2.encrypts(
-            f"peer2 -> peer1 :: ergvrtgrh"
-        )
-
-    print(encrypted,
-        peer1.decrypt(
-            encrypted,
-            nonce,
-            version
-        )
-    )
+    encrypted = peer2.encrypts(f"peer2 -> peer1 :: ergvrtgrh")
+    print(encrypted, peer1.decrypt(encrypted))
 
 if __name__ == "__main__": test()

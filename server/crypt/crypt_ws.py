@@ -22,42 +22,33 @@ class SignedSession:
     def create(key_b64: str) -> bytes:
         expiry = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)
         timestamp = int(expiry.timestamp())
-        # 8 (timestamp) + 44
-        return struct.pack(">Q", timestamp) + key_b64.encode('ascii')
+        return struct.pack(">Q 44s", timestamp, key_b64.encode())
 
     @staticmethod
     def check(cert_bytes: bytes, key_b64: str) -> bool:
         try:
             if len(cert_bytes) != 52:
                 return False
-            timestamp = struct.unpack(">Q", cert_bytes[:8])[0]
+            timestamp, b_incoming_key = struct.unpack(">Q 44s", cert_bytes)
             expiry = datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc)
             if expiry <= datetime.datetime.now(datetime.timezone.utc):
                 return False
-            incoming_key = cert_bytes[8:].decode('ascii')
-            return secrets.compare_digest(incoming_key, key_b64)
+            return secrets.compare_digest(b_incoming_key.decode(), key_b64)
         except Exception:
             return False
 
 class Communicator(ABC):
+    form_srv_handshake: struct.Struct = struct.Struct('>44s44s64s52s64s')
+    form_cl_handshake: struct.Struct = struct.Struct('>44s44s64s')
+
     def __init__(self, is_initiator: bool = False):
         self.communicator = crypt3_3.Communicator(is_initiator=is_initiator)
 
-    # 12 bytes nonce
-    # 4 bytes version
-
     def packet(self, data: str | bytes) -> bytes:
         if isinstance(data, bytes):
-            encrypted, nonce, version = self.communicator.encrypt(data)
+            return self.communicator.encrypt(data)
         else:
-            encrypted, nonce, version = self.communicator.encrypts(data)
-        return (version.to_bytes(4, byteorder='big') + nonce + encrypted)
-
-    def unpack(self, data: bytes) -> bytes:
-        version = int.from_bytes(data[:4], byteorder='big')
-        nonce = data[4:16]
-        encrypted = data[16:]
-        return self.communicator.decrypt(encrypted, nonce, version)
+            return self.communicator.encrypts(data)
 
     @abstractmethod
     async def receive(self) -> bytes:
@@ -78,12 +69,7 @@ class Communicator_server(Communicator):
             k_signing_pub, k_x25519_pub, k_pub_sign = self.communicator.get_public_key()
             verify_bytes = SignedSession.create(k_signing_pub)
             verify_string_sign = self.main_sign_priv.sign(verify_bytes)
-
-            handshake_data = (k_signing_pub.encode()  #44
-            + k_x25519_pub.encode()   #44
-            + k_pub_sign              #64
-            + verify_bytes            #52
-            + verify_string_sign)     #64
+            handshake_data = self.form_srv_handshake.pack(k_signing_pub.encode(), k_x25519_pub.encode(), k_pub_sign, verify_bytes, verify_string_sign)
             await self.ws.send_bytes(handshake_data)
             client_data = await asyncio.wait_for(self.ws.receive_bytes(), timeout=PACKET_TIMEOUT)
         except (TimeoutError, ConnectionClosedError, ConnectionError) as e:
@@ -92,9 +78,9 @@ class Communicator_server(Communicator):
         try:
             if len(client_data) != 152:
                 raise ValueError("Wrong client handshake size")
-            other_sign_key: str = client_data[0:44].decode()
-            other_pub: str = client_data[44:88].decode()
-            other_pub_sign: bytes = client_data[88:152]
+            b_other_sign_key, b_other_pub, other_pub_sign = self.form_cl_handshake.unpack_from(client_data)
+            other_sign_key: str = b_other_sign_key.decode()
+            other_pub: str = b_other_pub.decode()
 
             self.communicator.finalize_connection(other_sign_key, other_pub, other_pub_sign)
         except (ValueError, UnicodeDecodeError, IndexError, InternalError) as e:
@@ -113,7 +99,7 @@ class Communicator_server(Communicator):
     async def receive(self) -> bytes:
         try:
             packet = await asyncio.wait_for(self.ws.receive_bytes(), timeout=PACKET_TIMEOUT)
-            return self.unpack(packet)
+            return self.communicator.decrypt(packet)
         except (TimeoutError, fastapi.WebSocketDisconnect, ConnectionError, ConnectionResetError, ConnectionClosedError):
             if VERBOSE:
                 raise
@@ -131,9 +117,7 @@ class Communicator_client(Communicator):
     async def exchange(self) -> None:
         try:
             k_signing_pub, k_x25519_pub, k_pub_sign = self.communicator.get_public_key()
-            client_data = (k_signing_pub.encode()   #44
-             + k_x25519_pub.encode()                #44
-             + k_pub_sign)                          #44
+            client_data = self.form_cl_handshake.pack(k_signing_pub.encode(),k_x25519_pub.encode(), k_pub_sign)
             await self.ws.send(client_data)
             
             handshake_data = await asyncio.wait_for(self.ws.recv(), timeout=PACKET_TIMEOUT)
@@ -145,11 +129,9 @@ class Communicator_client(Communicator):
         try:
             if len(handshake_data) != 268:
                 raise MitmAttack("Wrong client handshake size")
-            peer_signpub_b64 = handshake_data[0:44].decode('ascii')
-            peer_public_key_b64 = handshake_data[44:88].decode('ascii')
-            peer_public_key_sign = handshake_data[88:152]
-            verify_bytes = handshake_data[152:204]
-            verify_string_sign = handshake_data[204:268]
+            b_signpub, b_pubkey, peer_public_key_sign, verify_bytes, verify_string_sign = self.form_srv_handshake.unpack_from(handshake_data)
+            peer_signpub_b64 = b_signpub.decode()
+            peer_public_key_b64 = b_pubkey.decode()
             
             self.communicator.finalize_connection(peer_signpub_b64, peer_public_key_b64, peer_public_key_sign)
         except (ValueError, UnicodeDecodeError, IndexError, InternalError) as e:
@@ -164,11 +146,11 @@ class Communicator_client(Communicator):
 
     async def send(self, text: str):
         try:
-            packet_bytes = self.packet(text)
+            packet = self.packet(text)
         except Exception as e:
             raise InternalError(f"Encryption failed inside send: {e}")
         try:
-            await self.ws.send(packet_bytes)
+            await self.ws.send(packet)
         except (ConnectionClosedError, ConnectionError, TimeoutError) as e:
             raise NetworkError(f"Client failed to send data: {e}")
 
@@ -177,7 +159,7 @@ class Communicator_client(Communicator):
             packet = await asyncio.wait_for(self.ws.recv(), timeout=PACKET_TIMEOUT)
             if not isinstance(packet, bytes):
                 raise MitmAttack
-            return self.unpack(packet)
+            return self.communicator.decrypt(packet)
         except (TimeoutError, ConnectionClosedError, ConnectionError):
             raise NetworkError
     
