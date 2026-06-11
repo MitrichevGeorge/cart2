@@ -78,7 +78,7 @@ class CryptoUtils:
             return False
 
 class Communicator:
-    REKEY_EVERY = 2
+    REKEY_EVERY = 100
     MAX_REKEY_GAP = 10
     STATIC_SALT = b"MyProtocol-Salt-6BgZkNiP"
 
@@ -99,6 +99,10 @@ class Communicator:
         self.other_sign_pub: Ed25519PublicKey | None = None
         self.send_counter, self.recv_counter = 0, 0
         self.send_key_version, self.recv_key_version = 0, 0
+
+        self._pack_aad = self.form_aad.pack
+        self._pack_packet = self.form_packet.pack
+        self._unpack_packet = self.form_packet.unpack_from
 
     def get_public_key(self) -> tuple[str, str, bytes]:
         # [sign public key], [X25519 public key], [signed X25519 public key]
@@ -136,7 +140,7 @@ class Communicator:
         self.finalize_connection(*data)
 
     def maybe_rekey(self):
-        if (self.send_counter != 0 and self.send_counter % self.REKEY_EVERY == 0):
+        if (self.send_counter == self.REKEY_EVERY):
             if self.send_key == None or self.rekey_seed_send == None:
                 raise InternalError
             self.send_key, self.rekey_seed_send = CryptoUtils.rekey(self.send_key, self.rekey_seed_send)
@@ -171,18 +175,18 @@ class Communicator:
         
         nonce = secrets.token_bytes(12)
         version = self.send_key_version
-        aad = self.form_aad.pack(version, self.send_counter, nonce)
+        aad = self._pack_aad(version, self.send_counter, nonce)
         encrypted = self.send_cipher.encrypt(nonce, data, aad)
 
         self.send_counter += 1
         self.maybe_rekey()
-        return self.form_packet.pack(version, nonce) + encrypted
+        return self._pack_packet(version, nonce) + encrypted
 
     def encrypts(self, text: str) -> bytes:
         return self.encrypt(text.encode())
 
     def decrypt(self, packet: bytes) -> bytes:
-        key_version, nonce = self.form_packet.unpack_from(packet, 0)
+        key_version, nonce = self._unpack_packet(packet, 0)
         encrypted = memoryview(packet)[16:]
         if self.other_sign_pub is None:
             raise InternalError("Other's sign public key is not initialized")
@@ -190,7 +194,7 @@ class Communicator:
             raise InternalError("ChaCha20Poly1305(receive) is not initialized")
         
         self.recv_counter %= self.REKEY_EVERY
-        aad = self.form_aad.pack(key_version, self.recv_counter, nonce)
+        aad = self._pack_aad(key_version, self.recv_counter, nonce)
         self.sync_recv_key(key_version)
         decrypted = self.recv_cipher.decrypt(nonce, encrypted, aad)
         self.recv_counter += 1
