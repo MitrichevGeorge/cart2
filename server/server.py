@@ -53,7 +53,7 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         peer = crypt_ws.Communicator_server(websocket, k_sign_priv)
         await peer.exchange()
-        await peer.send("hello everyone!")
+        await peer.send(b"hello everyone!")
         print(await peer.recv_str())
         print(await peer.recv_str())
         print(await peer.recv_str())

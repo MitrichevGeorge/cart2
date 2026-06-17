@@ -78,7 +78,7 @@ class CryptoUtils:
             return False
 
 class Communicator:
-    REKEY_EVERY = 100
+    REKEY_EVERY = 40
     MAX_REKEY_GAP = 10
     STATIC_SALT = b"MyProtocol-Salt-6BgZkNiP"
 
@@ -87,9 +87,9 @@ class Communicator:
     send_key: bytes | None = None
     recv_key: bytes | None = None
     rekey_seed: bytes | None = None
+    send_pkg_id: int = 0
 
     form_aad: struct.Struct = struct.Struct('>2I 12s')
-    form_packet: struct.Struct = struct.Struct('>I 12s')
 
     def __init__(self, is_initiator: bool = False):
         self.is_initiator = is_initiator
@@ -101,8 +101,6 @@ class Communicator:
         self.send_key_version, self.recv_key_version = 0, 0
 
         self._pack_aad = self.form_aad.pack
-        self._pack_packet = self.form_packet.pack
-        self._unpack_packet = self.form_packet.unpack_from
 
     def get_public_key(self) -> tuple[str, str, bytes]:
         # [sign public key], [X25519 public key], [signed X25519 public key]
@@ -113,13 +111,16 @@ class Communicator:
         )
 
     def finalize_connection(self, peer_signpub_b64: str, peer_public_key_b64: str, peer_public_key_sign: bytes):
-        self.other_sign_pub = CryptoUtils.deserialize_ed25519_key(peer_signpub_b64)
-        peer_pub = CryptoUtils.deserialize_x25519_key(peer_public_key_b64)
+        try:
+            self.other_sign_pub = CryptoUtils.deserialize_ed25519_key(peer_signpub_b64)
+            peer_pub = CryptoUtils.deserialize_x25519_key(peer_public_key_b64)
 
-        if not CryptoUtils.check_sign(self.other_sign_pub, peer_public_key_sign, peer_pub.public_bytes_raw()):
+            if not CryptoUtils.check_sign(self.other_sign_pub, peer_public_key_sign, peer_pub.public_bytes_raw()):
+                raise MitmAttack
+            shared_secret = self.priv.exchange(peer_pub)
+            material = CryptoUtils.derive_session_material(shared_secret, self.STATIC_SALT)
+        except Exception:
             raise MitmAttack
-        shared_secret = self.priv.exchange(peer_pub)
-        material = CryptoUtils.derive_session_material(shared_secret, self.STATIC_SALT)
 
         if self.is_initiator:
             self.send_key = material["key1"]
@@ -136,19 +137,18 @@ class Communicator:
         self.send_cipher = ChaCha20Poly1305(self.send_key)
         self.recv_cipher = ChaCha20Poly1305(self.recv_key)
 
-    def finalize_connection_from_data(self, data: tuple[str, str, bytes]):
-        self.finalize_connection(*data)
+    def rekey(self):
+        if self.send_key == None or self.rekey_seed_send == None:
+            raise InternalError
+        self.send_key, self.rekey_seed_send = CryptoUtils.rekey(self.send_key, self.rekey_seed_send)
+        self.send_cipher = ChaCha20Poly1305(self.send_key)
+        self.send_key_version += 1
+        self.send_counter = 0
+        log(f"[REKEY SEND -> v{self.send_key_version}]")
 
     def maybe_rekey(self):
         if (self.send_counter == self.REKEY_EVERY):
-            if self.send_key == None or self.rekey_seed_send == None:
-                raise InternalError
-            self.send_key, self.rekey_seed_send = CryptoUtils.rekey(self.send_key, self.rekey_seed_send)
-            # print(len(self.send_key), len(self.rekey_seed))
-            self.send_cipher = ChaCha20Poly1305(self.send_key)
-            self.send_key_version += 1
-            self.send_counter = 0
-            log(f"[REKEY SEND -> v{self.send_key_version}]")
+            self.rekey()
 
     def sync_recv_key(self, incoming_version: int):
         if self.recv_key is not None and self.rekey_seed_recv is not None:
@@ -166,42 +166,33 @@ class Communicator:
         else:
             raise InternalError
 
-    def encrypt(self, data: bytes) -> bytes:
+    def encrypt(self, data: bytes) -> tuple[int, bytes, bytes]:
         if self.send_cipher is None:
             if VERBOSE:
                 raise TypeError("ChaCha20Poly1305(send) is not initialized")
             else:
                 raise InternalError
         
+        self.send_pkg_id += 1
         nonce = secrets.token_bytes(12)
         version = self.send_key_version
-        aad = self._pack_aad(version, self.send_counter, nonce)
+        aad = self._pack_aad(self.send_pkg_id, version, nonce)
         encrypted = self.send_cipher.encrypt(nonce, data, aad)
 
         self.send_counter += 1
         self.maybe_rekey()
-        return self._pack_packet(version, nonce) + encrypted
+        return version, nonce, encrypted
 
-    def encrypts(self, text: str) -> bytes:
-        return self.encrypt(text.encode())
-
-    def decrypt(self, packet: bytes) -> bytes:
-        key_version, nonce = self._unpack_packet(packet, 0)
-        encrypted = memoryview(packet)[16:]
+    def decrypt(self, recv_pkg_id, key_version, nonce, encrypted) -> bytes:
         if self.other_sign_pub is None:
             raise InternalError("Other's sign public key is not initialized")
         if self.recv_cipher is None:
             raise InternalError("ChaCha20Poly1305(receive) is not initialized")
         
-        self.recv_counter %= self.REKEY_EVERY
-        aad = self._pack_aad(key_version, self.recv_counter, nonce)
+        aad = self._pack_aad(recv_pkg_id, key_version, nonce)
         self.sync_recv_key(key_version)
         decrypted = self.recv_cipher.decrypt(nonce, encrypted, aad)
-        self.recv_counter += 1
         return decrypted
-
-    def decrypts(self, packet: bytes) -> str:
-        return self.decrypt(packet).decode()
 
 def test():
     peer1 = Communicator(is_initiator=True)
@@ -212,20 +203,20 @@ def test():
     peer1.finalize_connection(p2_sign_key, p2_pub, p2_pub_sign)
     peer2.finalize_connection(p1_sign_key, p1_pub, p1_pub_sign)
 
-    for i in range(8):
-        encrypted = peer1.encrypts(f"peer1 -> peer2 :: {i}")
-        print(peer2.decrypt(encrypted))
+    for i in range(80000):
+        a,b,c = peer1.encrypt(f"peer1 -> peer2 :: {i}".encode())
+        print(peer2.decrypt(peer1.send_pkg_id,a,b,c))
 
-    encrypted = peer2.encrypts(f"peer2 -> peer1 :: hithere")
+    a,b,c = peer2.encrypt(f"peer2 -> peer1 :: hithere".encode())
 
-    print(encrypted, peer1.decrypt(encrypted))
+    print(c, peer1.decrypt(peer2.send_pkg_id,a,b,c))
 
-    for _ in range(20):
-        encrypted = peer2.encrypts(f"peer2 -> peer1 :: rtbrtgbtrbh")
-        print(encrypted)
+    for i in range(100):
+        for _ in range(800):
+            a,b,c = peer2.encrypt(f"peer2 -> peer1 :: rtbrtgbtrbh".encode())
+            print(c)
 
-
-    encrypted = peer2.encrypts(f"peer2 -> peer1 :: ergvrtgrh")
-    print(encrypted, peer1.decrypt(encrypted))
+        a,b,c = peer2.encrypt(f"peer2 -> peer1 :: ergvrtgrh".encode())
+        print(a,b,c, peer1.decrypt(peer2.send_pkg_id,a,b,c))
 
 if __name__ == "__main__": test()
