@@ -1,6 +1,7 @@
 import struct
 import secrets
 import datetime
+import traceback
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 from .crypt3_3 import Communicator, CryptoUtils
@@ -69,7 +70,7 @@ class BCommunicator(Communicator):
             else:
                 bit_pos = self._last_reliable_id - recv_pkg_id
 
-                if bit_pos >= self.WINDOW_SIZE:
+                if bit_pos >= self.WINDOW_SIZE or self._last_id - recv_pkg_id >= self.WINDOW_SIZE:
                     raise MitmAttack(f"Reliable packet {recv_pkg_id} is too old")
 
                 bit = 1 << bit_pos
@@ -171,7 +172,7 @@ def test():
         try:
             print(cl.unpack(data,*args))
         except Exception as e:
-            print(type(e),e)
+            traceback.print_exc()
 
     q = srv.pack(f"srv -> cl : hello repeat".encode())
     for i in range(5):
@@ -190,7 +191,7 @@ def test():
     tryunpack(a, True)
     tryunpack(a, True)
     tryunpack(a, True)
-
+    print("\n"+"="*20+"\n")
     a = srv.pack(b"A")
     for i in range(200):
         srv.pack(f"srv -> cl : {i}".encode())
@@ -204,7 +205,7 @@ def test():
     b = srv.pack(b"B")
     tryunpack(b, False)
     tryunpack(a, True)
-
+    print("\n")
 
     a = srv.pack(b"A")
     for i in range(50):
